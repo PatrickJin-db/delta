@@ -1001,6 +1001,10 @@ lazy val kernelUnityCatalog = (project in file("kernel/unitycatalog"))
       "org.scalatest" %% "scalatest" % scalaTestVersion % "test",
       "org.apache.logging.log4j" % "log4j-slf4j-impl" % "2.20.0" % "test",
       "org.apache.logging.log4j" % "log4j-core" % "2.20.0" % "test",
+      // The below test dependencies are only needed for real E2E integration tests against a real
+      // UC endpoint.
+      "io.unitycatalog" % "unitycatalog-client" % "0.2.1" % "test",
+      "org.apache.hadoop" % "hadoop-aws" % hadoopVersion % "test",
     ),
     unidocSourceFilePatterns += SourceFilePattern("src/main/java/io/delta/unity/"),
   ).configureUnidoc()
