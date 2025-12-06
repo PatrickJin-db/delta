@@ -25,6 +25,7 @@ import io.delta.kernel.Operation
 import io.delta.kernel.Snapshot
 import io.delta.kernel.Snapshot.ChecksumWriteMode
 import io.delta.kernel.engine.Engine
+import io.delta.kernel.internal.tablefeatures.TableFeatures
 import io.delta.kernel.internal.util.FileNames
 import io.delta.kernel.utils.CloseableIterable
 import io.delta.storage.commit.{Commit, GetCommitsResponse}
@@ -231,6 +232,56 @@ class UCE2ESuite extends AnyFunSuite with UCCatalogManagedTestUtils {
       assert(
         snapshot.getLogSegment.getMaxPublishedDeltaVersion.get() === 1,
         "Should recognize published version 1 but not go beyond it")
+    }
+  }
+
+  test("table with many changes, some backfilled, with crc") {
+    withTempDirAndEngine { case (_, engine) =>
+      // ===== GIVEN =====
+      val tablePathUnresolved = "unbackfilled_cdf_crc"
+      val tablePath = engine.getFileSystemClient.resolvePath(tablePathUnresolved)
+      val ucClient = new InMemoryUCClient("ucMetastoreId")
+      val ucCatalogManagedClient = new UCCatalogManagedClient(ucClient)
+
+      // CREATE -- v0.json
+      val tableProperties = Map(
+        TableFeatures.CHANGE_DATA_FEED_W_FEATURE.getTableFeatureSupportKey()
+          -> TableFeatures.SET_TABLE_FEATURE_SUPPORTED_VALUE
+          // TableFeatures.CATALOG_MANAGED_RW_FEATURE.getTableFeatureSupportKey()
+          //   -> TableFeatures.SET_TABLE_FEATURE_SUPPORTED_VALUE,
+          // UCCatalogManagedClient.UC_TABLE_ID_KEY -> testUcTableId
+      ).asJava
+      val result0 = ucCatalogManagedClient
+        .buildCreateTableTransaction(testUcTableId, tablePath, testSchema, "test-engine")
+        .withTableProperties(tableProperties)
+        .build(engine)
+        .commit(engine, CloseableIterable.emptyIterable())
+      val tableData0 = new TableData(-1, ArrayBuffer[Commit]())
+      ucClient.insertTableDataAfterCreate(testUcTableId)
+
+      var currentSnapshot = result0.getPostCommitSnapshot.get()
+
+      // INSERT -- published commits with CRC generation
+      for (i <- 1 to 4) {
+        currentSnapshot = writeDataAndVerify(
+          engine,
+          currentSnapshot,
+          ucClient,
+          expCommitVersion = i,
+          expNumCatalogCommits = i)
+        currentSnapshot.writeChecksum(engine, ChecksumWriteMode.SIMPLE)
+      }
+      currentSnapshot.publish(engine)
+
+      // INSERT -- unpublished commits without CRC generation
+      for (i <- 5 to 7) {
+        currentSnapshot = writeDataAndVerify(
+          engine,
+          currentSnapshot,
+          ucClient,
+          expCommitVersion = i,
+          expNumCatalogCommits = i)
+      }
     }
   }
 }
