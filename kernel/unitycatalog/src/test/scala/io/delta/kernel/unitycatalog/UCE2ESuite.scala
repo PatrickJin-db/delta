@@ -26,6 +26,7 @@ import io.delta.kernel.Snapshot
 import io.delta.kernel.Snapshot.ChecksumWriteMode
 import io.delta.kernel.engine.Engine
 import io.delta.kernel.internal.SnapshotImpl
+import io.delta.kernel.internal.tablefeatures.TableFeatures
 import io.delta.kernel.internal.util.FileNames
 import io.delta.kernel.unitycatalog.UCCatalogManagedCommitter
 import io.delta.kernel.utils.CloseableIterable
@@ -48,7 +49,7 @@ class UCE2ESuite extends AnyFunSuite with UCCatalogManagedTestUtils {
       expCommitVersion: Long,
       expNumCatalogCommits: Long): Snapshot = {
     val txn = snapshot
-      .buildUpdateTableTransaction("engineInfo", Operation.MANUAL_UPDATE)
+      .buildUpdateTableTransaction("engineInfo", Operation.WRITE)
       .build(engine)
     val result = commitAppendData(engine, txn, seqOfUnpartitionedDataBatch1)
     val tableData = ucClient.getTableDataElseThrow(testUcTableId)
@@ -58,7 +59,8 @@ class UCE2ESuite extends AnyFunSuite with UCCatalogManagedTestUtils {
   }
 
   test("simple case: create, write, publish, load") {
-    withTempDirAndEngine { case (tablePathUnresolved, engine) =>
+    withTempDirAndEngine { case (_, engine) =>
+      val tablePathUnresolved = "catalog_managed_unbackfilled_no_crc"
       val tablePath = engine.getFileSystemClient.resolvePath(tablePathUnresolved)
       val ucClient = new InMemoryUCClient("ucMetastoreId")
       val ucCatalogManagedClient = new UCCatalogManagedClient(ucClient)
@@ -430,6 +432,119 @@ class UCE2ESuite extends AnyFunSuite with UCCatalogManagedTestUtils {
 
       assert(commitRange3.getStartVersion === 2)
       assert(commitRange3.getEndVersion === 2)
+    }
+  }
+
+  test("many unbackfilled commits, some with CRC") {
+    withTempDirAndEngine { case (_, engine) =>
+      // ===== GIVEN =====
+      val tablePathUnresolved = "catalog_managed_unbackfilled_some_crc"
+      val tablePath = engine.getFileSystemClient.resolvePath(tablePathUnresolved)
+      val ucClient = new InMemoryUCClient("ucMetastoreId")
+      val ucCatalogManagedClient = new UCCatalogManagedClient(ucClient)
+
+      // CREATE -- v0.json
+      val result0 = ucCatalogManagedClient
+        .buildCreateTableTransaction(testUcTableId, tablePath, testSchema, "test-engine")
+        .build(engine)
+        .commit(engine, CloseableIterable.emptyIterable())
+      val tableData0 = new TableData(-1, ArrayBuffer[Commit]())
+      ucClient.insertTableDataAfterCreate(testUcTableId)
+
+      var currentSnapshot = result0.getPostCommitSnapshot.get()
+
+      currentSnapshot = writeDataAndVerify(
+        engine,
+        currentSnapshot,
+        ucClient,
+        expCommitVersion = 1,
+        expNumCatalogCommits = 1 // v1
+      )
+      currentSnapshot.publish(engine)
+      currentSnapshot.writeChecksum(engine, ChecksumWriteMode.SIMPLE)
+      // INSERT -- Empty commits with CRC generation
+      for (i <- 2 to 3) {
+        val txn = currentSnapshot
+          .buildUpdateTableTransaction("engineInfo", Operation.WRITE)
+          .build(engine)
+        val result = txn.commit(engine, CloseableIterable.emptyIterable())
+        currentSnapshot = result.getPostCommitSnapshot.get()
+        currentSnapshot.writeChecksum(engine, ChecksumWriteMode.SIMPLE)
+      }
+
+      // ===== WHEN =====
+      val freshSnapshot = loadSnapshot(ucCatalogManagedClient, engine, testUcTableId, tablePath)
+
+      // ===== THEN =====
+      val logSegment = freshSnapshot.getLogSegment
+
+      assert(freshSnapshot.getVersion === 3)
+      assert(logSegment.getAllCatalogCommits.asScala.map(_.getVersion) === Seq(1, 2, 3))
+      assert(logSegment.getMaxPublishedDeltaVersion.get() === 1)
+
+      val checksumVersion = FileNames.checksumVersion(logSegment.getLastSeenChecksum.get.getPath)
+      assert(checksumVersion === 3)
+
+      currentSnapshot = writeDataAndVerify(
+        engine,
+        currentSnapshot,
+        ucClient,
+        expCommitVersion = 4,
+        expNumCatalogCommits = 4 // v1 to v4
+      )
+      writeDataAndVerify(
+        engine,
+        currentSnapshot,
+        ucClient,
+        expCommitVersion = 5,
+        expNumCatalogCommits = 5 // v1 to v5
+      )
+    }
+  }
+
+  test("table with many changes, some backfilled, with crc") {
+    withTempDirAndEngine { case (_, engine) =>
+      // ===== GIVEN =====
+      val tablePathUnresolved = "catalog_managed_unbackfilled_streaming_crc"
+      val tablePath = engine.getFileSystemClient.resolvePath(tablePathUnresolved)
+      val ucClient = new InMemoryUCClient("ucMetastoreId")
+      val ucCatalogManagedClient = new UCCatalogManagedClient(ucClient)
+
+      // CREATE -- v0.json
+      val tableProperties = Map(
+        TableFeatures.CHANGE_DATA_FEED_W_FEATURE.getTableFeatureSupportKey()
+          -> TableFeatures.SET_TABLE_FEATURE_SUPPORTED_VALUE).asJava
+      val result0 = ucCatalogManagedClient
+        .buildCreateTableTransaction(testUcTableId, tablePath, testSchema, "test-engine")
+        .withTableProperties(tableProperties)
+        .build(engine)
+        .commit(engine, CloseableIterable.emptyIterable())
+      val tableData0 = new TableData(-1, ArrayBuffer[Commit]())
+      ucClient.insertTableDataAfterCreate(testUcTableId)
+
+      var currentSnapshot = result0.getPostCommitSnapshot.get()
+
+      // INSERT -- published commits with CRC generation
+      for (i <- 1 to 4) {
+        currentSnapshot = writeDataAndVerify(
+          engine,
+          currentSnapshot,
+          ucClient,
+          expCommitVersion = i,
+          expNumCatalogCommits = i)
+        currentSnapshot.writeChecksum(engine, ChecksumWriteMode.SIMPLE)
+      }
+      currentSnapshot.publish(engine)
+
+      // INSERT -- unpublished commits without CRC generation
+      for (i <- 5 to 7) {
+        currentSnapshot = writeDataAndVerify(
+          engine,
+          currentSnapshot,
+          ucClient,
+          expCommitVersion = i,
+          expNumCatalogCommits = i)
+      }
     }
   }
 }
