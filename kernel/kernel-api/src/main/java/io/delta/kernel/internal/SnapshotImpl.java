@@ -29,6 +29,7 @@ import io.delta.kernel.commit.PublishFailedException;
 import io.delta.kernel.commit.PublishMetadata;
 import io.delta.kernel.engine.Engine;
 import io.delta.kernel.expressions.Column;
+import io.delta.kernel.internal.actions.CommitInfo;
 import io.delta.kernel.internal.actions.DomainMetadata;
 import io.delta.kernel.internal.actions.Metadata;
 import io.delta.kernel.internal.actions.Protocol;

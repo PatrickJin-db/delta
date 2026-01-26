@@ -1003,7 +1003,13 @@ lazy val kernelUnityCatalog = (project in file("kernel/unitycatalog"))
       "org.apache.logging.log4j" % "log4j-core" % "2.20.0" % "test",
       // The below test dependencies are only needed for real E2E integration tests against a real
       // UC endpoint.
-      "io.unitycatalog" % "unitycatalog-client" % "0.2.1" % "test",
+      "io.unitycatalog" % "unitycatalog-client" % unityCatalogVersion % "test" excludeAll(
+        ExclusionRule(organization = "org.openapitools"),
+        ExclusionRule(organization = "com.fasterxml.jackson.core"),
+        ExclusionRule(organization = "com.fasterxml.jackson.module"),
+        ExclusionRule(organization = "com.fasterxml.jackson.datatype"),
+        ExclusionRule(organization = "com.fasterxml.jackson.dataformat")
+      ),
       "org.apache.hadoop" % "hadoop-aws" % hadoopVersion % "test",
     ),
     unidocSourceFilePatterns += SourceFilePattern("src/main/java/io/delta/unity/"),

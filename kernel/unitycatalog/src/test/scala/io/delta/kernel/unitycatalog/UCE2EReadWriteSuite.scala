@@ -14,10 +14,10 @@
  * limitations under the License.
  */
 
-package io.delta.unity
+package io.delta.kernel.unitycatalog
 
 import java.net.URI
-import java.util.{Collections, Optional}
+import java.util.{Collections, Map => JMap, Optional}
 
 import scala.collection.JavaConverters._
 
@@ -37,14 +37,16 @@ import io.delta.storage.commit.uccommitcoordinator.UCTokenBasedRestClient
 
 import io.unitycatalog.client.ApiClient
 import io.unitycatalog.client.api.{TablesApi, TemporaryCredentialsApi}
+import io.unitycatalog.client.auth.TokenProvider
 import io.unitycatalog.client.model.{GenerateTemporaryTableCredential, TableOperation, TemporaryCredentials}
 import org.apache.hadoop.conf.Configuration
 import org.scalatest.funsuite.AnyFunSuite
 
 // scalastyle:off
 class UCE2EReadWriteSuite extends AnyFunSuite {
-  val baseUri = "yyy"
-  val token = "xxx"
+  val baseUri =
+    "https://e2-dogfood.staging.cloud.databricks.com"
+  val token = "token"
 
   /** Creates a new Engine instance with credentials configured for the given storage location. */
   private def createEngineWithCredentials(credentials: TemporaryCredentials): Engine = {
@@ -126,7 +128,7 @@ class UCE2EReadWriteSuite extends AnyFunSuite {
       ucTableId: String,
       tablePath: String): Snapshot = {
     val latestSnapshot = ucCatalogManagedClient
-      .loadSnapshot(engine, ucTableId, tablePath, Optional.empty())
+      .loadSnapshot(engine, ucTableId, tablePath, Optional.empty(), Optional.empty())
       .asInstanceOf[SnapshotImpl]
     println(s"version: ${latestSnapshot.getVersion}")
     println(s"schema: ${latestSnapshot.getSchema}")
@@ -182,11 +184,19 @@ class UCE2EReadWriteSuite extends AnyFunSuite {
     println("Commit SUCCESS!!!!")
   }
 
+  case class TestTokenProvider(token: String) extends TokenProvider {
+    override def initialize(configs: JMap[String, String]): Unit = {}
+
+    override def accessToken(): String = token
+
+    override def configs(): JMap[String, String] = Collections.emptyMap[String, String]
+  }
+
   test("basic write") {
     // ========== Credential and Client Setup ==========
     val ucApiClient = getUcApiClient()
     val tablesApi = new TablesApi(ucApiClient)
-    val tableInfo = tablesApi.getTable("scott.main.ccv2_test_kkk")
+    val tableInfo = tablesApi.getTable("patrickjin_catalog.ccv2_test.unbackfilled1", false, false)
     val ucTableId = tableInfo.getTableId
     val tablePath = tableInfo.getStorageLocation
     val temporaryCredentialsApi = new TemporaryCredentialsApi(ucApiClient)
@@ -194,7 +204,8 @@ class UCE2EReadWriteSuite extends AnyFunSuite {
       .generateTemporaryTableCredentials(
         new GenerateTemporaryTableCredential()
           .tableId(ucTableId).operation(TableOperation.READ_WRITE))
-    val ucDeltaStorageClient = new UCTokenBasedRestClient(baseUri, token)
+    val tokenProvider = TestTokenProvider(token)
+    val ucDeltaStorageClient = new UCTokenBasedRestClient(baseUri, tokenProvider)
     val engine = createEngineWithCredentials(temporaryCredentials)
     val ucCatalogManagedClient = new UCCatalogManagedClient(ucDeltaStorageClient)
 
