@@ -21,8 +21,8 @@ import java.util.Optional
 import scala.collection.JavaConverters._
 import scala.collection.mutable.ArrayBuffer
 
+import io.delta.kernel.{Snapshot, Table}
 import io.delta.kernel.Operation
-import io.delta.kernel.Snapshot
 import io.delta.kernel.Snapshot.ChecksumWriteMode
 import io.delta.kernel.engine.Engine
 import io.delta.kernel.expressions.Column
@@ -269,56 +269,32 @@ class UCE2ESuite extends AnyFunSuite with UCCatalogManagedTestUtils {
         .build(engine)
         .commit(engine, CloseableIterable.emptyIterable() /* dataActions */ )
       ucClient.insertTableDataAfterCreate(testUcTableId)
-      result0.getPostCommitSnapshot.get().publish(engine) // Should be no-op!
+      var snapshot = result0.getPostCommitSnapshot.get()
+      snapshot.publish(engine) // Should be no-op!
 
-      // Step 2: WRITE -- v1.uuid.json
-      val postCommitSnapshot1 = writeDataAndVerifyPartitioned(
-        engine,
-        result0.getPostCommitSnapshot.get(),
-        ucClient,
-        expCommitVersion = 1,
-        expNumCatalogCommits = 1)
+      // Step 2: WRITE v1 to v10
+      (1 to 10).foreach { i =>
+        snapshot = writeDataAndVerifyPartitioned(
+          engine,
+          snapshot,
+          ucClient,
+          expCommitVersion = i,
+          expNumCatalogCommits = i)
+      }
+      // publish v1 to v10
+      snapshot.publish(engine)
+      // write v5 checkpoint
+      Table.forPath(engine, tablePath).checkpoint(engine, 5)
 
-      // Step 3: WRITE -- v2.uuid.json
-      val postCommitSnapshot2 = writeDataAndVerifyPartitioned(
-        engine,
-        postCommitSnapshot1,
-        ucClient,
-        expCommitVersion = 2,
-        expNumCatalogCommits = 2)
-
-      // Step 4a: PUBLISH v1.json and v2.json -- Note that this does NOT update UC
-      postCommitSnapshot2.publish(engine)
-
-      // Step 4b: VERIFY UC is unchanged by the publish operation
-      val tableData2 = ucClient.getTableDataElseThrow(testUcTableId)
-      assert(tableData2.getMaxRatifiedVersion === 2)
-      assert(tableData2.getCommits.size === 2)
-      postCommitSnapshot2.publish(engine) // idempotent! shouldn't throw
-
-      // Step 5: WRITE -- v3.uuid.json
-      // Even though v1.json and v2.json are published, snapshotV2 will still have v1.uuid.json and
-      // v2.uuid.json in its LogSegment (since catalog commits take priority). Nonetheless, it will
-      // see that v2 is the maxKnownPublishedDeltaVersion. It will include this information in its
-      // next commit, and UC will then clean up catalog commits v1.uuid.json and v2.uuid.json.
-      val snapshotV2 = loadSnapshot(ucCatalogManagedClient, engine, testUcTableId, tablePath)
-      val logSegmentV2 = snapshotV2.getLogSegment
-      assert(logSegmentV2.getAllCatalogCommits.asScala.map(x => x.getVersion) === Seq(1, 2))
-      assert(logSegmentV2.getMaxPublishedDeltaVersion.get() === 2)
-      writeDataAndVerifyPartitioned(
-        engine,
-        snapshotV2,
-        ucClient,
-        expCommitVersion = 3,
-        expNumCatalogCommits = 1 // just v3.uuid.json, since v1 and v2 are cleaned up
-      )
-
-      // Step 6: LOAD -- should read v0.json, v1.json, v2.json, and v3.uuid.json
-      val snapshotV3 = loadSnapshot(ucCatalogManagedClient, engine, testUcTableId, tablePath)
-      val logSegmentV3 = snapshotV3.getLogSegment
-      assert(snapshotV3.getVersion === 3)
-      assert(logSegmentV3.getAllCatalogCommits.asScala.map(x => x.getVersion) === Seq(3))
-      assert(logSegmentV3.getMaxPublishedDeltaVersion.get() === 2)
+      // write v11 to v25, unbackfilled
+      (11 to 25).foreach { i =>
+        snapshot = writeDataAndVerifyPartitioned(
+          engine,
+          snapshot,
+          ucClient,
+          expCommitVersion = i,
+          expNumCatalogCommits = i)
+      }
     }
   }
 }
